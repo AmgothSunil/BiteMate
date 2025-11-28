@@ -1,0 +1,12 @@
+google-adk
+ipykernel
+python-dotenv
+langchain
+mcp
+langchain-community
+arxiv
+wikipedia
+langchain-huggingface
+sentence-transformers
+pinecone
+psycopg2-binary
