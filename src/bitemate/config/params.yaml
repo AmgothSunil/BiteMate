@@ -23,6 +23,7 @@ user_profiler_agent:
 
 meal_planner_agent:
   file_path: "meal_planner_agent.log"
+  model_name: "gemini-2.5-flash"
 
 prompt_loader:
   file_path: "prompt_loader.log"

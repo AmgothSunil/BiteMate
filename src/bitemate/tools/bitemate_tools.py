@@ -68,26 +68,26 @@ def save_user_preference(user_id: str, preference_text: str,  medical_info: str,
         logger.error(f"Error saving preference: {e}")
         return f"Error: Could not save preference. {str(e)}"
 
-@mcp.tool()
-def recall_user_profile(user_id: str, context_query: str) -> str:
-    """
-    Retrieves relevant user preferences based on the current context.
-    Use this before generating recipes to check for allergies or dislikes.
+# @mcp.tool()
+# def recall_user_profile(user_id: str, context_query: str) -> str:
+#     """
+#     Retrieves relevant user preferences based on the current context.
+#     Use this before generating recipes to check for allergies or dislikes.
     
-    Args:
-        user_id (str): The user ID.
-        context_query (str): What is happening (e.g., 'planning dinner with chicken').
-    """
-    try:
-        results = pinecone_memory.get_relevant_profile(user_id, context_query)
-        if not results:
-            return "No relevant past preferences found."
+#     Args:
+#         user_id (str): The user ID.
+#         context_query (str): What is happening (e.g., 'planning dinner with chicken').
+#     """
+#     try:
+#         results = pinecone_memory.get_relevant_profile(user_id, context_query)
+#         if not results:
+#             return "No relevant past preferences found."
         
-        # Format as a clean string for the LLM
-        memories = [f"- [{m['category']}] {m['text']}" for m in results]
-        return "User Profile Context:\n" + "\n".join(memories)
-    except Exception as e:
-        return f"Error retrieving profile: {str(e)}"
+#         # Format as a clean string for the LLM
+#         memories = [f"- [{m['category']}] {m['text']}" for m in results]
+#         return "User Profile Context:\n" + "\n".join(memories)
+#     except Exception as e:
+#         return f"Error retrieving profile: {str(e)}"
 
 @mcp.tool()
 def get_recent_conversation(user_id: str, session_id: str, limit: int = 5) -> str:
