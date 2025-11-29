@@ -1,36 +1,28 @@
 import sys
 import os
-import asyncio
-import inspect
 import datetime
-from typing import Any, List, Optional
+from typing import Optional
 from dotenv import load_dotenv
-# from google.adk.tools.google_search_tool import google_search
+
 # --- Google ADK Imports ---
 from google.genai import types
 from google.adk.agents import Agent, SequentialAgent
 from google.adk.models.google_llm import Gemini
-from google.adk.tools import FunctionTool
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.adk.memory import InMemoryMemoryService
 
 # --- Internal Core Imports ---
 from src.bitemate.utils.params import load_params
 from src.bitemate.core.logger import setup_logger
 from src.bitemate.core.exception import AppException
 from src.bitemate.utils.prompt import PromptManager
-from src.bitemate.utils.run_sessions import SessionManager
 
 # --- Tool Imports ---
 from src.bitemate.tools.bitemate_tools import (
-    recall_user_profile, 
+    recall_user_profile,
     save_generated_meal_plan,
     search_recipes,
     search_nutrition_info,
     search_usda_database,
 )
-from src.bitemate.db.pinecone_memory_db import UserProfileMemory
 
 # Load Env
 load_dotenv()
@@ -39,14 +31,8 @@ os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 # Constants
 CONFIG_REL_PATH = "src/bitemate/config/params.yaml"
 
-# Services
-session_service = InMemorySessionService()
-memory_service = InMemoryMemoryService()
-session_manager = SessionManager(session_service=session_service)
+# Prompt Manager
 prompt_manager = PromptManager()
-
-# Tool Instances
-pinecone = UserProfileMemory()
 
 # Retry Configuration
 RETRY_CONFIG = types.HttpRetryOptions(
@@ -58,43 +44,18 @@ RETRY_CONFIG = types.HttpRetryOptions(
     http_status_codes=[429, 500, 503, 504]
 )
 
-# # ---------- Helper: Robust FunctionTool Creator ----------
-# def _create_function_tool(func, name: Optional[str] = None, description: Optional[str] = None):
-#     """Robustly converts a Python function/method into a Google ADK FunctionTool."""
-#     # 1. Try standard factory
-#     try:
-#         if hasattr(FunctionTool, "from_function"):
-#             return FunctionTool.from_function(func)
-#     except Exception:
-#         pass
-
-#     # 2. Try constructor injection
-#     try:
-#         tool_name = name or getattr(func, "__name__", "tool")
-#         tool_desc = description or getattr(func, "__doc__", "")
-#         return FunctionTool(name=tool_name, fn=func, description=tool_desc)
-#     except Exception:
-#         pass
-
-#     # 3. Fallback Wrapper with __name__ attribute
-#     class _SimpleTool:
-#         def __init__(self, fn, tool_name, desc):
-#             self.fn = fn
-#             self.name = tool_name
-#             self.__name__ = tool_name  # ← FIX: Add __name__ attribute
-#             self.description = desc
-#         def __call__(self, *args, **kwargs):
-#             return self.fn(*args, **kwargs)
-#         def run(self, *args, **kwargs):
-#             return self.fn(*args, **kwargs)
-#         def __repr__(self):
-#             return f"<_SimpleTool name={self.name}>"
-            
-#     return _SimpleTool(func, name or getattr(func, "__name__", "tool"), description or getattr(func, "__doc__", ""))
-
 
 class MealPlannerPipeline:
-    """Orchestrates meal planning using Sequential Agents."""
+    """
+    Orchestrates meal planning using Sequential Agents.
+    This class ONLY defines the agent configuration - execution happens in the orchestrator.
+    
+    Agent Flow:
+    1. RecipeFinderAgent: Recalls profile & finds recipes → outputs found_recipes
+    2. DailyMealPlanner: Creates full day plan & saves → outputs daily_meal_plan
+    3. MealGeneratingAgent: Generates cooking instructions → outputs cooking_instructions
+    4. UserVarietyAgent: Checks variety & provides final response
+    """
     
     def __init__(self, config_path: str = CONFIG_REL_PATH):
         try:
@@ -107,34 +68,37 @@ class MealPlannerPipeline:
             self.logger = setup_logger(name="MealPlannerPipeline", log_file_name=log_file)
             
             # 3. Model Configuration
-            # IMPORTANT: Using same default as user_profiler_agent.py for consistency
-            # gemini-2.0-flash-exp supports function calling with FunctionTool
-            # Config says gemini-2.5-flash but user_profiler defaults to 2.0-flash-exp
             self.model_name = self.agent_config.get("model_name", "gemini-2.5-flash")
             
-            # # 4. Prepare Tools
-            # self.research_tools = [
-            #     _create_function_tool(search_recipes, name="search_recipes"),
-            #     _create_function_tool(search_nutrition_info, name="search_nutrition_info"),
-            #     _create_function_tool(search_usda_database, name="search_usda_database"),
-            #     google_search
-            # ]
-            
-            self.planning_tools = [
-                save_generated_meal_plan,
+            # 4. Prepare Tools per Agent
+            # Recipe Finder needs profile recall + search tools
+            self.recipe_finder_tools = [
                 recall_user_profile,
-                
+                search_recipes,
+                search_nutrition_info,
+                search_usda_database,
             ]
             
-            self.audit_tools = [
+            # Daily Planner needs profile recall + save meal plan
+            self.daily_planner_tools = [
                 recall_user_profile,
-                
+                save_generated_meal_plan,
+            ]
+            
+            # Meal Generator only needs profile recall
+            self.meal_generator_tools = [
+                recall_user_profile,
+            ]
+            
+            # Variety Agent only needs profile recall
+            self.variety_tools = [
+                recall_user_profile,
             ]
             
             self.logger.info("MealPlannerPipeline initialized successfully.")
             
         except Exception as e:
-            msg = f"Failed to initialize MealPlannerPipeline: {str(e)}"
+            msg = f"Failed to initialize MealPlannerPipeline: {str( e)}"
             if hasattr(self, 'logger'):
                 self.logger.critical(msg)
             else:
@@ -142,40 +106,61 @@ class MealPlannerPipeline:
             raise AppException(msg, sys)
 
     def _create_recipe_finder_agent(self) -> Agent:
+        """
+        Agent 1: Recalls user profile and finds suitable recipes.
+        Input: {user_input}, {current_time}
+        Output: found_recipes
+        """
         try:
-            instruction = prompt_manager.load_prompt("src/bitemate/prompts/meal_planner_prompts/recipe_finder_prompt.txt")
+            instruction = prompt_manager.load_prompt(
+                "src/bitemate/prompts/meal_planner_prompts/recipe_finder_prompt.txt"
+            )
         except Exception:
             self.logger.warning("Prompt file missing, using default.")
-            instruction = """Find recipes based on nutritional needs: {user_nutritional_needs}.
-            Use the recall_user_profile tool to fetch the user's full profile data first."""
+            instruction = """Find recipes based on user profile. 
+            Use the recall_user_profile tool first to fetch the user's full profile data."""
 
         return Agent(
             name="RecipeFinderAgent",
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
-            description="Finds recipes matching dietary constraints.",
+            description="Finds recipes matching dietary constraints and user preferences.",
             instruction=instruction,
-            tools=self.audit_tools,
+            tools=self.recipe_finder_tools,
             output_key="found_recipes"
         )
 
     def _create_daily_meal_planner_agent(self) -> Agent:
+        """
+        Agent 2: Creates full day meal plan (breakfast, lunch, dinner) from found recipes.
+        Input: {found_recipes}, {user_input}, {current_time}
+        Output: daily_meal_plan
+        """
         try:
-            instruction = prompt_manager.load_prompt("src/bitemate/prompts/meal_planner_prompts/daily_meal_planner_prompt.txt")
+            instruction = prompt_manager.load_prompt(
+                "src/bitemate/prompts/meal_planner_prompts/daily_meal_planner_prompt.txt"
+            )
         except Exception:
             instruction = "Plan meals based on found recipes: {found_recipes}."
 
         return Agent(
             name="DailyMealPlanner",
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
-            description="Schedules meals and saves the plan to DB.",
+            description="Schedules meals for the full day and saves the plan to DB.",
             instruction=instruction,
-            tools=self.planning_tools,
+            tools=self.daily_planner_tools,
             output_key="daily_meal_plan"
         )
 
     def _create_meal_generator_agent(self) -> Agent:
+        """
+        Agent 3: Generates detailed cooking instructions from daily meal plan.
+        Input: {daily_meal_plan}
+        Output: cooking_instructions
+        """
         try:
-            instruction = prompt_manager.load_prompt("src/bitemate/prompts/meal_planner_prompts/meal_preparation_prompt.txt")
+            instruction = prompt_manager.load_prompt(
+                "src/bitemate/prompts/meal_planner_prompts/meal_preparation_prompt.txt"
+            )
         except Exception:
             instruction = "Generate cooking instructions for: {daily_meal_plan}."
 
@@ -184,13 +169,20 @@ class MealPlannerPipeline:
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
             description="Generates step-by-step cooking instructions.",
             instruction=instruction,
-            tools=self.planning_tools,
+            tools=self.meal_generator_tools,
             output_key="cooking_instructions"
         )
 
     def _create_variety_agent(self) -> Agent:
+        """
+        Agent 4: Checks variety and provides final encouraging response.
+        Input: {cooking_instructions}
+        Output: None (final agent)
+        """
         try:
-            instruction = prompt_manager.load_prompt("src/bitemate/prompts/meal_planner_prompts/variety_check.txt")
+            instruction = prompt_manager.load_prompt(
+                "src/bitemate/prompts/meal_planner_prompts/variety_check.txt"
+            )
         except Exception:
             instruction = "Check for variety and finalize response."
 
@@ -199,15 +191,19 @@ class MealPlannerPipeline:
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
             description="Ensures nutritional balance and variety.",
             instruction=instruction,
-            tools=self.audit_tools
+            tools=self.variety_tools
         )
 
-    def run_pipeline(self, user_id: str, user_input: str, 
-                     user_nutritional_needs: str = "Standard balanced diet", 
-                     session_id: str = "default") -> Any:
-        """Executes the sequential meal planning chain."""
+    def create_sequential_agent(self) -> SequentialAgent:
+        """
+        Creates and returns the complete sequential agent chain.
+        This method is called by the orchestrator to build the pipeline.
+        
+        Returns:
+            SequentialAgent: The configured sequential agent chain
+        """
         try:
-            self.logger.info(f"Starting Meal Planning Pipeline for User: {user_id}")
+            self.logger.info("Building Meal Planning Sequential Agent Chain...")
             
             # 1. Instantiate Agents
             recipe_finder = self._create_recipe_finder_agent()
@@ -221,65 +217,20 @@ class MealPlannerPipeline:
                 sub_agents=[recipe_finder, meal_planner, meal_generator, variety_agent]
             )
             
-            # 3. Build Runner
-            runner = Runner(
-                app_name="agents",
-                agent=root_agent,
-                session_service=session_service,
-                memory_service=memory_service
-            )
-            
-            # 4. Context Variables
-            context_vars = {
-                "user_id": user_id,
-                "user_input": user_input,
-                "user_nutritional_needs": user_nutritional_needs,
-                "current_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-
-            self.logger.info("Executing Sequential Chain...")
-            
-            # 5. Run via Session Manager
-            responses = asyncio.run(
-                session_manager.run_session(
-                    runner_instance=runner,
-                    user_queries=user_input,
-                    session_id=session_id,
-                    context_variables=context_vars
-                )
-            )
-            
-            self.logger.info("Pipeline execution completed successfully.")
-            return responses
+            self.logger.info("Meal Planning Sequential Agent Chain created successfully.")
+            return root_agent
             
         except Exception as e:
-            self.logger.error(f"Error during meal planning pipeline execution: {e}")
-            raise AppException(f"Meal Planning Failed: {e}", sys)
+            self.logger.error(f"Error creating sequential agent: {e}")
+            raise AppException(f"Agent Creation Failed: {e}", sys)
 
 
-# ---------------- Example Usage ----------------
+#---------------- Example Usage (for testing agent creation only) ----------------
 if __name__ == "__main__":
     try:
         pipeline = MealPlannerPipeline()
-        
-        # IMPORTANT: Use the same user_id from user_profiler_agent!
-        mock_user_id = "test_user_alpha"  # ← Same as your user profiler
-        mock_input = (
-            "I need a healthy lunch plan for today. "
-            "I'm vegetarian and trying to lose weight."
-        )
-        
-        # The meal planner will fetch the user's profile from DB using recall_user_profile
-        result = pipeline.run_pipeline(
-            user_id=mock_user_id,
-            user_input=mock_input,
-            session_id="test_meal_session_1"
-        )
-        
-        print("\n\n✅ FINAL MEAL PLANNING RESPONSE:")
-        print(result)
-        
+        agent_chain = pipeline.create_sequential_agent()
+        print(f"✅ Meal Planning Agent Chain Created: {agent_chain.name}")
+        print(f"   Sub-agents: {[agent.name for agent in agent_chain.sub_agents]}")
     except Exception as err:
         print(f"\n❌ SETUP FAILED: {err}")
-        import traceback
-        traceback.print_exc()
