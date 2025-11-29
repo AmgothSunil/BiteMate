@@ -47,64 +47,64 @@ RETRY_CONFIG = types.HttpRetryOptions(
     jitter=0.2,             # Add 20% random jitter to prevent thundering herd
     http_status_codes=[429, 500, 503, 504]  # Retry on these HTTP errors
 )
-# ---------- Helper: Robust FunctionTool Creator ----------
-def _create_function_tool(func, name: Optional[str] = None, description: Optional[str] = None):
-    """
-    Flexible creator for ADK function tools:
-      - tries FunctionTool.from_function(func)
-      - tries common constructors like FunctionTool(func=...) or FunctionTool(name=..., func=...)
-      - falls back to a lightweight adapter object exposing `.name`, `.description`,
-        and callable behavior via __call__ and run().
-    This helps compatibility across google.adk versions.
-    """
-    # 1) Try convenience factory if present
-    try:
-        if hasattr(FunctionTool, "from_function") and inspect.isfunction(getattr(FunctionTool, "from_function")):
-            try:
-                return FunctionTool.from_function(func)
-            except Exception:
-                # Fall-through to other attempts
-                pass
-    except Exception:
-        pass
-    # 2) Try common constructor signatures
-    try:
-        sig = inspect.signature(FunctionTool)
-        params = sig.parameters
-        # Common variant: FunctionTool(func=...)
-        if "func" in params:
-            try:
-                return FunctionTool(func=func)
-            except Exception:
-                pass
-        # Common variant: FunctionTool(name=..., func=...)
-        if "name" in params and ("func" in params or "fn" in params):
-            kwargs = {}
-            kwargs["name"] = name or func.__name__
-            if "func" in params:
-                kwargs["func"] = func
-            elif "fn" in params:
-                kwargs["fn"] = func
-            try:
-                return FunctionTool(**kwargs)
-            except Exception:
-                pass
-    except Exception:
-        # signature() may fail on some builtins; ignore and continue
-        pass
-    # 3) Fallback adapter
-    class _SimpleTool:
-        def __init__(self, fn, tool_name=None, desc=None):
-            self.fn = fn
-            self.name = tool_name or fn.__name__
-            self.description = desc or (fn.__doc__ or "")
-        def __call__(self, *args, **kwargs):
-            return self.fn(*args, **kwargs)
-        def run(self, *args, **kwargs):
-            return self.fn(*args, **kwargs)
-        def __repr__(self):
-            return f"<_SimpleTool name={self.name}>"
-    return _SimpleTool(func, tool_name=(name or func.__name__), desc=description or func.__doc__)
+# # ---------- Helper: Robust FunctionTool Creator ----------
+# def _create_function_tool(func, name: Optional[str] = None, description: Optional[str] = None):
+#     """
+#     Flexible creator for ADK function tools:
+#       - tries FunctionTool.from_function(func)
+#       - tries common constructors like FunctionTool(func=...) or FunctionTool(name=..., func=...)
+#       - falls back to a lightweight adapter object exposing `.name`, `.description`,
+#         and callable behavior via __call__ and run().
+#     This helps compatibility across google.adk versions.
+#     """
+#     # 1) Try convenience factory if present
+#     try:
+#         if hasattr(FunctionTool, "from_function") and inspect.isfunction(getattr(FunctionTool, "from_function")):
+#             try:
+#                 return FunctionTool.from_function(func)
+#             except Exception:
+#                 # Fall-through to other attempts
+#                 pass
+#     except Exception:
+#         pass
+#     # 2) Try common constructor signatures
+#     try:
+#         sig = inspect.signature(FunctionTool)
+#         params = sig.parameters
+#         # Common variant: FunctionTool(func=...)
+#         if "func" in params:
+#             try:
+#                 return FunctionTool(func=func)
+#             except Exception:
+#                 pass
+#         # Common variant: FunctionTool(name=..., func=...)
+#         if "name" in params and ("func" in params or "fn" in params):
+#             kwargs = {}
+#             kwargs["name"] = name or func.__name__
+#             if "func" in params:
+#                 kwargs["func"] = func
+#             elif "fn" in params:
+#                 kwargs["fn"] = func
+#             try:
+#                 return FunctionTool(**kwargs)
+#             except Exception:
+#                 pass
+#     except Exception:
+#         # signature() may fail on some builtins; ignore and continue
+#         pass
+#     # 3) Fallback adapter
+#     class _SimpleTool:
+#         def __init__(self, fn, tool_name=None, desc=None):
+#             self.fn = fn
+#             self.name = tool_name or fn.__name__
+#             self.description = desc or (fn.__doc__ or "")
+#         def __call__(self, *args, **kwargs):
+#             return self.fn(*args, **kwargs)
+#         def run(self, *args, **kwargs):
+#             return self.fn(*args, **kwargs)
+#         def __repr__(self):
+#             return f"<_SimpleTool name={self.name}>"
+#     return _SimpleTool(func, tool_name=(name or func.__name__), desc=description or func.__doc__)
 # ---------- Pipeline Class ----------
 class UserProfilingPipeline:
     """
@@ -122,16 +122,14 @@ class UserProfilingPipeline:
             self.model_name = self.agent_config.get("model_name", "gemini-2.0-flash-exp")
             # 4. Wrap MCP Functions as ADK Tools using the robust helper
             self.profiling_tools = [
-                _create_function_tool(save_user_preference, name="save_user_preference",
-                                     description="Save a user preference into DB / vector store"),
-                _create_function_tool(recall_user_profile, name="recall_user_profile",
-                                     description="Retrieve user profile from storage")
+                save_user_preference,
+                recall_user_profile,
             ]
             self.calculation_tools = [
-                _create_function_tool(search_nutrition_info, name="search_nutrition_info"),
-                _create_function_tool(search_usda_database, name="search_usda_database"),
-                _create_function_tool(search_scientific_papers, name="search_scientific_papers"),
-                google_search  # native ADK-provided tool
+                search_nutrition_info,
+                search_usda_database,
+                search_scientific_papers,
+                # google_search  # native ADK-provided tool
             ]
             self.logger.info("UserProfilingPipeline initialized successfully.")
         except Exception as e:
@@ -228,8 +226,7 @@ if __name__ == "__main__":
         pipeline = UserProfilingPipeline()
         mock_user_id = "test_user_alpha"
         mock_input = (
-            "Hi, I am 30 years old male, 180cm height and 85kg. "
-            "I am pre-diabetic and vegetarian. I want to lose weight."
+            "I want an recipe for pasta, i want to try it today give full process of making it"
         )
         result = pipeline.run_pipeline(user_id=mock_user_id, user_input=mock_input, session_id="test_session_1")
         print("\n\n✅ FINAL PIPELINE RESPONSE:")
