@@ -4,12 +4,10 @@ from pathlib import Path
 from typing import List, Optional, Union, Generator
 
 # Third-party imports
-from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types
 
 # Internal imports
-# Assuming these modules exist in your project structure
 from src.bitemate.utils.params import load_params
 from src.bitemate.core.logger import setup_logger
 from src.bitemate.core.exception import AppException
@@ -19,198 +17,83 @@ DEFAULT_SESSION_ID = "default_session"
 DEFAULT_USER_ID = "default_user"
 CONFIG_REL_PATH = "src/bitemate/config/params.yaml"
 
-class SessionManager:
+async def run_session(
+    runner_instance: Runner,
+    user_queries: list[str] | str = None,
+    session_name: str = "default",
+    user_id: str = DEFAULT_USER_ID,  # Accept user_id as parameter
+):
     """
-    Manages the lifecycle of GenAI sessions and query execution.
-
-    This class handles configuration loading, session service initialization,
-    and the execution of user queries against the Runner instance.
+    Execute agent runner with dynamic user identification.
+    
+    Args:
+        runner_instance: Google ADK Runner instance
+        user_queries: User input queries
+        session_name: Unique session identifier for this conversation
+        user_id: Unique user identifier (persistent across sessions)
+    
+    Returns:
+        str: Response from the final agent in the sequential chain
     """
+    print(f"\n ### Session: {session_name} | User: {user_id}")
 
-    def __init__(self, config_path: Optional[str] = None, session_service = None):
-        """
-        Initializes the SessionManager with configuration and services.
+    # Get app name from the Runner
+    app_name = runner_instance.app_name
+    
+    # Use the session_service from the runner_instance
+    if hasattr(runner_instance, "session_service"):
+        session_service = runner_instance.session_service
+    else:
+        raise AppException("Runner instance is missing 'session_service'.", sys)
 
-        Args:
-            config_path (Optional[str]): Custom path to the YAML config file. 
-                                         If None, attempts to resolve relative to project root.
-            session_service: Optional session service instance. If None, creates a new InMemorySessionService.
-        """
-        # Resolve configuration path dynamically to avoid file-not-found errors
-        if config_path:
-            self.config_path = Path(config_path)
-        else:
-            # Assuming this script is running from project root, or resolving relative to this file
-            # Adjust .parent.parent calls depending on where this file sits relative to src/
-            project_root = Path(os.getcwd()) 
-            self.config_path = project_root / CONFIG_REL_PATH
-
-        # Load parameters
-        try:
-            self.params = load_params(str(self.config_path))
-            self.run_session_params = self.params.get("run_session_params", {})
-        except Exception as e:
-            # Fallback if config fails, but log critical error
-            print(f"CRITICAL: Failed to load config at {self.config_path}. Error: {e}")
-            self.run_session_params = {}
-
-        # Extract configuration with defaults
-        self.logs_file_path = self.run_session_params.get("file_path", "run_session.log")
-        self.app_name = self.run_session_params.get("app_name", "agents")
-        self.default_user_id = self.run_session_params.get("user_id", DEFAULT_USER_ID)
-
-        # Initialize Logger
-        self.logger = setup_logger(
-            name="SessionManager",
-            log_file_name=self.logs_file_path
+    # Attempt to create a new session or retrieve an existing one
+    try:
+        session = await session_service.create_session(
+            app_name=app_name, 
+            user_id=user_id,  # Use dynamic user_id
+            session_id=session_name
+        )
+    except Exception:
+        # If creation fails (e.g., session already exists), retrieve it
+        session = await session_service.get_session(
+            app_name=app_name, 
+            user_id=user_id,  # Use dynamic user_id
+            session_id=session_name
         )
 
-        # Initialize Session Service - use provided one or create new
-        # This ensures runner and SessionManager use the same session_service instance
-        if session_service is not None:
-            self.session_service = session_service
-        else:
-            self.session_service = InMemorySessionService()
-        
-        self.logger.info("SessionManager initialized successfully.")
-
-    async def _get_or_create_session(self, session_id: str, user_id: str, context_variables: dict = None):
-        """
-        Retrieves an existing session or creates a new one if it doesn't exist.
-
-        Args:
-            session_id (str): The unique identifier for the session.
-            user_id (str): The user associated with the session.
-            context_variables (dict): Optional context variables to store in session state
-                                     for template substitution in agent prompts
-
-        Returns:
-            Session: The initialized session object.
-
-        Raises:
-            AppException: If session operations fail.
-        """
-        try:
-            # Attempt to create a fresh session with context variables as state
-            session = await self.session_service.create_session(
-                app_name=self.app_name, 
-                user_id=user_id, 
-                session_id=session_id,
-                state=context_variables or {}  # Pass context as session state
-            )
-            self.logger.info(f"New session created. [SessionID: {session_id}, UserID: {user_id}]")
-            return session
-
-        except Exception as creation_error:
-            # If creation fails (likely already exists), attempt retrieval
-            self.logger.debug(f"Session creation skipped; attempting retrieval. Reason: {creation_error}")
-            
-            try:
-                session = await self.session_service.get_session(
-                    app_name=self.app_name, 
-                    user_id=user_id, 
-                    session_id=session_id
-                )
-                # Update session state with new context variables if provided
-                if context_variables:
-                    session.state.update(context_variables)
-                
-                self.logger.info(f"Existing session retrieved. [SessionID: {session_id}]")
-                return session
-            except Exception as retrieval_error:
-                # Log the exception stack trace and raise a custom application exception
-                error_msg = f"Failed to initialize session {session_id} for user {user_id}."
-                self.logger.exception(error_msg)
-                raise AppException(f"{error_msg} Details: {retrieval_error}")
-
-    async def run_session(
-        self, 
-        runner_instance: Runner, 
-        user_queries: Union[List[str], str], 
-        session_id: str = DEFAULT_SESSION_ID,
-        context_variables: dict = None
-    ) -> List[str]:
-        """
-        Executes a list of user queries against the provided runner within a specific session.
-
-        Args:
-            runner_instance (Runner): The agent runner instance to execute prompts.
-            user_queries (list[str] | str): A single query string or a list of query strings.
-            session_id (str): Unique identifier for the conversation session.
-            context_variables (dict): Optional context variables to pass to session state
-                                     for template substitution in agent prompts (e.g., {user_id})
-
-        Returns:
-            List[str]: A list of response texts corresponding to the input queries.
-        """
-        
-        # Normalize input to list
+    # Process queries if provided
+    if user_queries:
+        # Convert single query to list for uniform processing
         if isinstance(user_queries, str):
-            queries = [user_queries]
-        else:
-            queries = user_queries
+            user_queries = [user_queries]
 
-        user_id = self.default_user_id
-        responses: List[str] = []
+        # Process each query in the list sequentially
+        for query in user_queries:
+            print(f"\nUser > {query}")
 
-        # 1. Initialize Session with context variables
-        session = await self._get_or_create_session(session_id, user_id, context_variables)
+            # Convert the query string to the ADK Content format
+            query_content = types.Content(role="user", parts=[types.Part(text=query)])
 
-        # 2. Process Queries
-        self.logger.info(f"Processing {len(queries)} queries for session {session_id}.")
+            # Stream the agent's response asynchronously
+            # Collect all responses from the sequential agent chain
+            last_response = None
+            async for event in runner_instance.run_async(
+                user_id=user_id,  # Use dynamic user_id
+                session_id=session.id, 
+                new_message=query_content
+            ):
+                # Check if the event contains valid content
+                if event.content and event.content.parts:
+                    # Filter out empty or "None" responses
+                    part_text = event.content.parts[0].text
+                    if part_text and part_text != "None":
+                        print(f"\n{event.content.role.capitalize()} > {part_text}\n")
+                        last_response = part_text  # Keep updating with latest response
+            
+            # Return the final response from the last agent in the chain
+            return last_response
+    else:
+        print("No queries!")
 
-        for index, query_text in enumerate(queries):
-            try:
-                query_content = types.Content(
-                    role="user", 
-                    parts=[types.Part(text=query_text)]
-                )
-                
-                self.logger.debug(f"Streaming response for query {index+1}/{len(queries)}.")
 
-                # Variable to hold the final accumulated text for this query
-                final_response_text = None
-
-                # Stream agent response
-                async for event in runner_instance.run_async(
-                    user_id=user_id, 
-                    session_id=session.id, 
-                    new_message=query_content
-                ):
-                    # Check for validity of content
-                    if event.is_final_response() and event.content and event.content.parts:
-                        text_part = event.content.parts[0].text
-                        
-                        # Validate text is not a string literal "None" or empty
-                        if text_part and text_part != "None":
-                            final_response_text = text_part
-                            # We break the inner loop (stream) once we have the final answer
-                            # If you need partial streaming updates, logic changes here.
-                            break 
-                
-                if final_response_text:
-                    responses.append(final_response_text)
-                else:
-                    self.logger.warning(f"Query {index+1} resulted in no valid text response.")
-                    responses.append("") # Maintain index alignment
-
-            except Exception as e:
-                self.logger.error(f"Error processing query '{query_text[:30]}...': {str(e)}")
-                raise AppException(f"Error during query execution: {e}")
-
-        self.logger.info("Batch query execution completed.")
-        return responses
-
-# -------------------------------------------------------------------------
-# Example Usage (usually inside a main block or a separate entrypoint file)
-# -------------------------------------------------------------------------
-# if __name__ == "__main__":
-#     # This block prevents the code from running when imported by other modules
-#     import asyncio
-
-#     async def main():
-#         # Mocking Runner for demonstration purposes as we don't have the instance here
-#         # runner = Runner(...) 
-#         print("✅ SessionManager defined. Initialize usage inside your main application flow.")
-
-#     # asyncio.run(main())
+print("✅ Helper functions defined.")

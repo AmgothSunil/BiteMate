@@ -10,3 +10,8 @@ langchain-huggingface
 sentence-transformers
 pinecone
 psycopg2-binary
+fastapi
+uvicorn
+streamlit
+requests    
+langchain_mcp_adapters

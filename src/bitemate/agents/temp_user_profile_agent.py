@@ -14,13 +14,18 @@ from src.bitemate.core.logger import setup_logger
 from src.bitemate.core.exception import AppException
 from src.bitemate.utils.prompt import PromptManager
 
-# ✅ ADD THIS INSTEAD
-from src.bitemate.tools.mcp_client import get_mcp_toolset
+# --- Tool Imports ---
+from src.bitemate.tools.bitemate_tools import (
+    save_user_preference,
+    recall_user_profile,
+    search_nutrition_info,
+    search_usda_database,
+    search_scientific_papers
+)
 
-# Load Environment Variables FIRST
+# Load Environment Variables
 load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
-
 
 # Constants
 CONFIG_REL_PATH = "src/bitemate/config/params.yaml"
@@ -63,12 +68,21 @@ class UserProfilingPipeline:
             # 3. Model Configuration
             self.model_name = self.agent_config.get("model_name", "gemini-2.5-flash")
             
-            # 4. Assign MCP Toolset to agents
-            # IMPORTANT: Pass the toolset instance directly, not in a list
-            self.tools = get_mcp_toolset()  # NOT [bitemate_tools]
+            # 4. Define Tools per Agent
+            # Profiler & Updater need save/recall tools
+            self.profiling_tools = [
+                save_user_preference,
+                recall_user_profile,
+            ]
+            
+            # Calculator needs research tools for nutrition data
+            self.calculation_tools = [
+                search_nutrition_info,
+                search_usda_database,
+                search_scientific_papers,
+            ]
             
             self.logger.info("UserProfilingPipeline initialized successfully.")
-            self.logger.info(f"Using MCP Toolset: {type(self.tools).__name__}")
             
         except Exception as e:
             msg = f"Failed to initialize UserProfilingPipeline: {str(e)}"
@@ -92,7 +106,7 @@ class UserProfilingPipeline:
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
             description="Extracts bio-data and saves it to the vector database.",
             instruction=instruction,
-            tools=[self.tools],  # Pass as list to Agent
+            tools=self.profiling_tools,
             output_key="extracted_profile_json"
         )
     
@@ -110,47 +124,27 @@ class UserProfilingPipeline:
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
             description="Calculates nutritional needs based on extracted profile.",
             instruction=instruction,
-            tools=[self.tools],  # Pass as list to Agent
+            tools=self.calculation_tools,
             output_key="calculated_macros"
         )
     
-    def _create_variety_agent(self) -> Agent:
+    def _create_updater_agent(self) -> Agent:
         """
         Agent 3: Saves nutrition goals to Pinecone and provides confirmation.
         Input: {calculated_macros}
         Output: None (final agent)
         """
         instruction = prompt_manager.load_prompt(
-            "src/bitemate/prompts/user_profiler_prompts/variety_check.txt"
+            "src/bitemate/prompts/user_profiler_prompts/create_updater_prompt.txt"
         )
         return Agent(
-            name="VarietyChecker",
+            name="ProfileUpdater",
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
             description="Saves the final calculated goals back to memory.",
             instruction=instruction,
-            tools=[self.tools],  # Pass as list to Agent
-            output_key="variety_guidance"
+            tools=self.profiling_tools
         )
     
-
-    def _create_recipe_finder_agent(self) -> Agent:
-        """
-        Agent 3: Saves nutrition goals to Pinecone and provides confirmation.
-        Input: {calculated_macros}
-        Output: None (final agent)
-        """
-        instruction = prompt_manager.load_prompt(
-            "src/bitemate/prompts/user_profiler_prompts/recipe_finder_prompt.txt"
-        )
-        return Agent(
-            name="RecipeFinder",
-            model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
-            description="Saves the final calculated goals back to memory.",
-            instruction=instruction,
-            tools=[self.tools],  # Pass as list to Agent
-            output_key="found_recipes"
-        )
-
     def create_sequential_agent(self) -> SequentialAgent:
         """
         Creates and returns the complete sequential agent chain.
@@ -179,8 +173,8 @@ class UserProfilingPipeline:
         except Exception as e:
             self.logger.error(f"Error creating sequential agent: {e}")
             raise AppException(f"Agent Creation Failed: {e}", sys)
-    
-    
+
+
 # ---------------- Example Usage (for testing agent creation only) ----------------
 if __name__ == "__main__":
     try:

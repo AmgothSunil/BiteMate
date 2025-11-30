@@ -15,8 +15,14 @@ from src.bitemate.core.logger import setup_logger
 from src.bitemate.core.exception import AppException
 from src.bitemate.utils.prompt import PromptManager
 
-from src.bitemate.tools.mcp_client import get_mcp_toolset
-
+# --- Tool Imports ---
+from src.bitemate.tools.bitemate_tools import (
+    recall_user_profile,
+    save_generated_meal_plan,
+    search_recipes,
+    search_nutrition_info,
+    search_usda_database,
+)
 
 # Load Env
 load_dotenv()
@@ -37,48 +43,6 @@ RETRY_CONFIG = types.HttpRetryOptions(
     jitter=0.2,
     http_status_codes=[429, 500, 503, 504]
 )
-
-
-
-# Load Environment Variables FIRST
-load_dotenv()
-os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
-
-# ============================================================================
-# Initialize MCP Toolset (BEFORE pipeline class)
-# ============================================================================
-
-# Option 1: HTTP Connection (if your server is running at localhost:8000)
-# bitemate_tools = McpToolset(
-#     connection_params=StreamableHTTPServerParams(
-#         url="http://localhost:8000",
-#         timeout=60
-#     )
-# )
-
-# Option 2: SSE Connection (alternative for HTTP)
-# bitemate_tools = McpToolset(
-#     connection_params=SseServerParams(
-#         url="http://localhost:8000",
-#         timeout=30
-#     )
-# )
-
-# Option 3: STDIO Connection (recommended - faster, no HTTP server needed)
-# from google.adk.tools.mcp_tool.mcp_session_manager import StdioServerParameters
-# bitemate_tools = McpToolset(
-#     connection_params=StdioConnectionParams(
-#         server_params=StdioServerParameters(
-#             command="python",
-#             args=["-m", "src.bitemate.tools.mcp_tools"],
-#             env=os.environ.copy()
-#         ),
-#         timeout=30
-#     )
-# )
-
-# print(f"✅ MCP Toolset initialized: {bitemate_tools}")
-
 
 
 class MealPlannerPipeline:
@@ -107,7 +71,29 @@ class MealPlannerPipeline:
             self.model_name = self.agent_config.get("model_name", "gemini-2.5-flash")
             
             # 4. Prepare Tools per Agent
-            self.tools = get_mcp_toolset()
+            # Recipe Finder needs profile recall + search tools
+            self.recipe_finder_tools = [
+                recall_user_profile,
+                search_recipes,
+                search_nutrition_info,
+                search_usda_database,
+            ]
+            
+            # Daily Planner needs profile recall + save meal plan
+            self.daily_planner_tools = [
+                recall_user_profile,
+                save_generated_meal_plan,
+            ]
+            
+            # Meal Generator only needs profile recall
+            self.meal_generator_tools = [
+                recall_user_profile,
+            ]
+            
+            # Variety Agent only needs profile recall
+            self.variety_tools = [
+                recall_user_profile,
+            ]
             
             self.logger.info("MealPlannerPipeline initialized successfully.")
             
@@ -119,30 +105,29 @@ class MealPlannerPipeline:
                 print(f"CRITICAL: {msg}")
             raise AppException(msg, sys)
 
-
-
-    def _create_meal_generator_agent(self) -> Agent:
+    def _create_recipe_finder_agent(self) -> Agent:
         """
-        Agent 3: Generates detailed cooking instructions from daily meal plan.
-        Input: {daily_meal_plan}
-        Output: cooking_instructions
+        Agent 1: Recalls user profile and finds suitable recipes.
+        Input: {user_input}, {current_time}
+        Output: found_recipes
         """
         try:
             instruction = prompt_manager.load_prompt(
-                "src/bitemate/prompts/meal_planner_prompts/meal_preparation_prompt.txt"
+                "src/bitemate/prompts/meal_planner_prompts/recipe_finder_prompt.txt"
             )
         except Exception:
-            instruction = "Generate cooking instructions for: {daily_meal_plan}."
+            self.logger.warning("Prompt file missing, using default.")
+            instruction = """Find recipes based on user profile. 
+            Use the recall_user_profile tool first to fetch the user's full profile data."""
 
         return Agent(
-            name="MealGeneratingAgent",
+            name="RecipeFinderAgent",
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
-            description="Generates step-by-step cooking instructions.",
+            description="Finds recipes matching dietary constraints and user preferences.",
             instruction=instruction,
-            tools=[self.tools],
-            output_key="meal_instructions"
+            tools=self.recipe_finder_tools,
+            output_key="found_recipes"
         )
-
 
     def _create_daily_meal_planner_agent(self) -> Agent:
         """
@@ -162,26 +147,51 @@ class MealPlannerPipeline:
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
             description="Schedules meals for the full day and saves the plan to DB.",
             instruction=instruction,
-            tools=[self.tools],
+            tools=self.daily_planner_tools,
             output_key="daily_meal_plan"
         )
 
-
-    def _create_updater_agent(self) -> Agent:
+    def _create_meal_generator_agent(self) -> Agent:
         """
-        Agent 3: Saves nutrition goals to Pinecone and provides confirmation.
-        Input: {calculated_macros}
+        Agent 3: Generates detailed cooking instructions from daily meal plan.
+        Input: {daily_meal_plan}
+        Output: cooking_instructions
+        """
+        try:
+            instruction = prompt_manager.load_prompt(
+                "src/bitemate/prompts/meal_planner_prompts/meal_preparation_prompt.txt"
+            )
+        except Exception:
+            instruction = "Generate cooking instructions for: {daily_meal_plan}."
+
+        return Agent(
+            name="MealGeneratingAgent",
+            model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
+            description="Generates step-by-step cooking instructions.",
+            instruction=instruction,
+            tools=self.meal_generator_tools,
+            output_key="cooking_instructions"
+        )
+
+    def _create_variety_agent(self) -> Agent:
+        """
+        Agent 4: Checks variety and provides final encouraging response.
+        Input: {cooking_instructions}
         Output: None (final agent)
         """
-        instruction = prompt_manager.load_prompt(
-            "src/bitemate/prompts/user_profiler_prompts/create_updater_prompt.txt"
-        )
+        try:
+            instruction = prompt_manager.load_prompt(
+                "src/bitemate/prompts/meal_planner_prompts/variety_check.txt"
+            )
+        except Exception:
+            instruction = "Check for variety and finalize response."
+
         return Agent(
-            name="ProfileUpdater",
+            name="UserVarietyAgent",
             model=Gemini(model=self.model_name, retry_options=RETRY_CONFIG),
-            description="Saves the final calculated goals back to memory.",
+            description="Ensures nutritional balance and variety.",
             instruction=instruction,
-            tools=[self.tools]
+            tools=self.variety_tools
         )
 
     def create_sequential_agent(self) -> SequentialAgent:
