@@ -1,6 +1,5 @@
 """
-BiteMate MCP Server - Fixed version with proper session handling
-Reference: FastMCP documentation
+BiteMate MCP Server
 """
 
 import os
@@ -14,16 +13,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 # Internal imports
-try:
-    from src.bitemate.db.pinecone_memory_db import UserProfileMemory
-    from src.bitemate.db.postgre_db import PostgresManager
-except ImportError:
-    print("⚠️  Database modules not available - tools will operate in read-only mode")
-    UserProfileMemory = None
-    PostgresManager = None
-
 from src.bitemate.core.logger import setup_logger
-from src.bitemate.core.exception import AppException
 
 # ============================================================================
 # 1. Initialization & Configuration
@@ -32,30 +22,42 @@ from src.bitemate.core.exception import AppException
 load_dotenv()
 logger = setup_logger("BiteMateTools", "mcp_tools.log")
 
+# --- CRITICAL FIX: Write non-JSON logs to STDERR, never STDOUT ---
+def log_safe(message: str):
+    sys.stderr.write(f"[BiteMateTools] {message}\n")
+    sys.stderr.flush()
+
+# Import DBs safely
+UserProfileMemory = None
+PostgresManager = None
+
+try:
+    from src.bitemate.db.pinecone_memory_db import UserProfileMemory
+    from src.bitemate.db.postgre_db import PostgresManager
+except ImportError:
+    log_safe("⚠️ Database modules not found. Running in stateless mode.")
+
 # API Keys
 NUTRITIONIX_APP_ID = os.getenv("NUTRITIONIX_APP_ID")
 NUTRITIONIX_API_KEY = os.getenv("NUTRITIONIX_API_KEY")
 SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
 USDA_API_KEY = os.getenv("USDA_API_KEY")
 
-# Initialize Services (Fail Gracefully)
+# Initialize Services
 pinecone_memory = None
 postgre_memory = None
 
 try:
-    logger.info("Initializing Database Services...")
     if UserProfileMemory:
         pinecone_memory = UserProfileMemory()
     if PostgresManager:
         postgre_memory = PostgresManager()
-
-    logger.info("Services initialized successfully.")
+    log_safe("Database services initialized.")
 except Exception as e:
-    logger.warning(f"Service initialization with warning: {e}")
-    logger.info("Continuing with available services only...")
+    log_safe(f"Service initialization warning: {e}")
 
 # ============================================================================
-# Initialize FastMCP Server - Corrected per documentation
+# Initialize FastMCP Server
 # ============================================================================
 
 mcp = FastMCP(
@@ -63,242 +65,129 @@ mcp = FastMCP(
     dependencies=["requests", "psycopg2-binary", "pinecone", "langchain"]
 )
 
-logger.info(f"FastMCP server initialized: {mcp.name}")
-
 # ============================================================================
-# 🧠 MEMORY TOOLS (Database Interactions)
+# 🧠 MEMORY TOOLS
 # ============================================================================
 
 @mcp.tool()
-def save_user_preference(user_id: str, preference_text: str, medical_info: str, category: str = "general") -> str:
-    """
-    Saves a user's core preference into long-term memory.
-    
-    Args:
-        user_id (str): The ID of the user.
-        preference_text (str): The detail to remember.
-        medical_info (str): Medical context.
-        category (str): Category (e.g., 'allergy', 'diet', 'appliance').
-    """
+def save_user_preference(user_id: str, preference_text: str, medical_info: str = "", category: str = "general") -> str:
+    """Saves user preference to Pinecone."""
     try:
         if not pinecone_memory:
-            return "Warning: Pinecone not initialized. Preference not saved."
-        
+            return "System Error: Memory database not active."
         mem_id = pinecone_memory.add_user_preference(user_id, preference_text, category, medical_info)
-        return f"Success: Preference saved with ID {mem_id}"
+        return f"Saved preference ID: {mem_id}"
     except Exception as e:
         logger.error(f"Error saving preference: {e}")
-        return f"Error: Could not save preference. {str(e)}"
-
+        return f"Error: {str(e)}"
 
 @mcp.tool()
 def get_recent_conversation(user_id: str, session_id: str, limit: int = 5) -> str:
-    """
-    Fetches the last few messages from chat history to understand context.
-    """
+    """Fetches chat history."""
     try:
         if not postgre_memory:
-            return "Warning: PostgreSQL not initialized. No history available."
-        
+            return "No history available (DB inactive)."
         history = postgre_memory.get_session_history(user_id, session_id, limit)
         return postgre_memory.format_history_for_llm(history)
     except Exception as e:
         return f"Error fetching history: {str(e)}"
 
-
 @mcp.tool()
-def save_information_to_postgre(user_id: str, session_id: str, plan_summary: str, recipes_json: dict) -> str:
-    """
-    Saves a completed meal plan to PostgreSQL for permanent storage.
-    """
+def save_information_to_postgre(user_id: str, session_id: str, plan_summary: str, recipes_json: dict = {}) -> str:
+    """Saves meal plan to Postgres."""
     try:
         if not postgre_memory:
-            return "Warning: PostgreSQL not initialized. Plan not saved."
-        
+            return "System Error: Database not active."
         postgre_memory.add_message(
-            user_id=user_id,
-            session_id=session_id,
-            role="system",
-            content=f"MEAL_PLAN_SAVED: {plan_summary}",
-            metadata=recipes_json
+            user_id=user_id, session_id=session_id, role="system",
+            content=f"MEAL_PLAN_SAVED: {plan_summary}", metadata=recipes_json
         )
-        return "Meal plan saved to database successfully."
+        return "Meal plan saved."
     except Exception as e:
         logger.error(f"Postgres Save Error: {e}")
-        return f"Error saving meal plan: {e}"
-
+        return f"Error saving plan: {e}"
 
 @mcp.tool()
 def recall_user_profile(user_id: str, context: str) -> str:
-    """
-    Retrieves dietary restrictions and CUISINE preferences.
-    
-    Args:
-        user_id (str): User ID
-        context (str): e.g., "planning dinner"
-    """
+    """Retrieves relevant user profile data."""
     try:
         if not pinecone_memory:
-            return "No specific preferences found (Pinecone not initialized)."
-        
+            return "No profile data (DB inactive)."
         results = pinecone_memory.get_relevant_profile(user_id, context)
         if not results:
-            return "No specific preferences found (assume general diet)."
+            return "No specific preferences found."
         
-        output = ["User Profile / Preferences:"]
+        output = ["User Profile:"]
         for m in results:
-            output.append(f"- [{m['category']}] {m['text']}")
+            output.append(f"- [{m.get('category','info')}] {m.get('text','')}")
         return "\n".join(output)
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error recalling profile: {e}"
 
 # ============================================================================
-# 🥦 EXTERNAL API TOOLS (Nutrition & Recipes)
+# 🥦 EXTERNAL API TOOLS
 # ============================================================================
 
 @mcp.tool()
 def search_nutrition_info(query: str) -> str:
-    """
-    Fetch calories, protein, and macros using Nutritionix API.
-    
-    Args:
-        query (str): Food name (e.g., "1 cup cooked rice", "2 large eggs")
-    """
-    if not NUTRITIONIX_APP_ID or not NUTRITIONIX_API_KEY:
-        return "Error: Nutritionix API credentials not configured."
-    
-    headers = {
-        "x-app-id": NUTRITIONIX_APP_ID,
-        "x-app-key": NUTRITIONIX_API_KEY,
-        "Content-Type": "application/json",
-    }
+    """Fetch nutrition info via Nutritionix."""
+    if not NUTRITIONIX_APP_ID: return "Configuration Error: Missing API Keys."
     
     try:
         resp = requests.post(
             "https://trackapi.nutritionix.com/v2/natural/nutrients",
-            headers=headers,
-            json={"query": query},
-            timeout=10
+            headers={
+                "x-app-id": NUTRITIONIX_APP_ID,
+                "x-app-key": NUTRITIONIX_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={"query": query}, timeout=10
         )
-        resp.raise_for_status()
+        if resp.status_code != 200: return "No nutrition data found."
         data = resp.json()
-        
-        foods = []
+        output = []
         for item in data.get("foods", []):
-            foods.append(
-                f"{item['food_name']} ({item['serving_weight_grams']}g): "
-                f"{item['nf_calories']} kcal, "
-                f"Protein: {item['nf_protein']}g, "
-                f"Carbs: {item['nf_total_carbohydrate']}g, "
-                f"Fat: {item['nf_total_fat']}g"
-            )
-        
-        return "\n".join(foods) if foods else "No nutritional info found."
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Nutritionix API Error: {e}")
-        return f"Error connecting to nutrition database: {e}"
-
+            output.append(f"{item['food_name']}: {item['nf_calories']}kcal, P:{item['nf_protein']}g")
+        return "\n".join(output)
+    except Exception as e:
+        return f"API Error: {e}"
 
 @mcp.tool()
 def search_recipes(query: str, diet: Optional[str] = None) -> str:
-    """
-    Search for recipes using Spoonacular API.
+    """Search recipes via Spoonacular."""
+    if not SPOONACULAR_API_KEY: return "Configuration Error: Missing API Key."
     
-    Args:
-        query (str): Recipe keyword (e.g., 'pasta', 'chicken curry')
-        diet (str, optional): Diet filter (e.g., 'vegetarian', 'vegan')
-    """
-    if not SPOONACULAR_API_KEY:
-        return "Error: Spoonacular API key not configured."
-    
-    params = {
-        "apiKey": SPOONACULAR_API_KEY,
-        "query": query,
-        "addRecipeInformation": True,
-        "addRecipeNutrition": True,
-        "number": 3
-    }
-    
-    if diet:
-        params["diet"] = diet
+    params = {"apiKey": SPOONACULAR_API_KEY, "query": query, "number": 3, "addRecipeNutrition": True}
+    if diet: params["diet"] = diet
     
     try:
-        response = requests.get(
-            "https://api.spoonacular.com/recipes/complexSearch",
-            params=params,
-            timeout=10
-        )
-        response.raise_for_status()
-        data = response.json()
+        resp = requests.get("https://api.spoonacular.com/recipes/complexSearch", params=params, timeout=10)
+        data = resp.json()
         results = data.get("results", [])
-        
-        if not results:
-            return "No recipes found."
-        
-        simplified = []
-        for r in results:
-            info = (
-                f"Title: {r['title']}\n"
-                f"Time: {r['readyInMinutes']} mins\n"
-                f"Link: {r.get('sourceUrl', 'N/A')}"
-            )
-            simplified.append(info)
-        
-        return "\n---\n".join(simplified)
-    except requests.exceptions.RequestException as e:
-        return f"Error fetching recipes: {str(e)}"
-
+        if not results: return "No recipes found."
+        return "\n".join([f"{r['title']} (Ready in {r['readyInMinutes']}m)" for r in results])
+    except Exception as e:
+        return f"API Error: {e}"
 
 @mcp.tool()
 def search_usda_database(query: str) -> str:
-    """
-    Search for generic food items in USDA FoodData Central database.
-    """
-    if not USDA_API_KEY:
-        return "Error: USDA_API_KEY not configured."
-    
+    """Search USDA Food Database."""
+    if not USDA_API_KEY: return "Configuration Error: Missing USDA Key."
     try:
-        response = requests.get(
-            "https://api.nal.usda.gov/fdc/v1/foods/search",
-            params={"query": query, "pageSize": 3, "api_key": USDA_API_KEY},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            foods = data.get("foods", [])
-            output = []
-            for f in foods:
-                desc = f.get("description", "Unknown")
-                output.append(f"- {desc}")
-            return "\n".join(output) if output else "No USDA data found."
-        else:
-            return f"USDA API Error: {response.status_code}"
+        resp = requests.get("https://api.nal.usda.gov/fdc/v1/foods/search", 
+                           params={"query": query, "pageSize": 3, "api_key": USDA_API_KEY}, timeout=10)
+        data = resp.json()
+        return "\n".join([f"- {f['description']}" for f in data.get("foods", [])])
     except Exception as e:
-        return f"Error connecting to USDA: {e}"
-
+        return f"API Error: {e}"
 
 # ============================================================================
 # Main Entry Point
 # ============================================================================
 
 if __name__ == "__main__":
-    logger.info("=" * 70)
-    logger.info("BiteMate MCP Server Starting...")
-    logger.info("=" * 70)
-    
+    # NO PRINT STATEMENTS HERE!
     try:
-        # Start the MCP server
-        # Google ADK automatically handles stdio/HTTP transport
-        port = int(os.getenv("MCP_PORT", 8000))
-        logger.info(f"MCP Server listening on port {port}")
-        
-        # FastMCP will use stdio by default when run as a module
         mcp.run()
-        
-    except KeyboardInterrupt:
-        logger.info("MCP Server shutdown by user")
-        sys.exit(0)
     except Exception as e:
-        logger.critical(f"MCP Server failed: {e}")
         sys.exit(1)

@@ -17,13 +17,19 @@ pinecone_memory_params:
 postgre_memory_db:
   file_path: "postgre_database.log"
 
-user_profiler_agent:
-  file_path: "user_profiling.log"
-  model_name: "gemini-2.5-flash"
+prompt_loader:
+  file_path: "prompt_loader.log"
+
 
 meal_planner_agent:
   file_path: "meal_planner_agent.log"
-  model_name: "gemini-2.5-flash"
+  model_name: "gemini-2.0-flash"
 
-prompt_loader:
-  file_path: "prompt_loader.log"
+
+router_agent:
+  file_path: "router_agent.log"
+  model_name: "gemini-2.0-flash"
+
+orchestrator_agent:
+  file_path: "orchestrator_agent.log"
+  model_name: "gemini-2.0-flash"

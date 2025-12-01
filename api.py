@@ -11,7 +11,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.bitemate.agents.main_agent import BiteMateOrchestrator
+# from src.bitemate.agents.main_agent import BiteMateOrchestrator
+from src.bitemate.agents.main_agents import BiteMateOrchestrator
 
 load_dotenv()
 
