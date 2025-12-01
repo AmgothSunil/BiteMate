@@ -1,4 +1,3 @@
-# src/bitemate/agents/router_agent.py
 from __future__ import annotations
 
 import sys

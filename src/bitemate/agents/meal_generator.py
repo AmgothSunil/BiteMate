@@ -1,4 +1,3 @@
-# src/bitemate/pipeline/meal_planner_pipeline.py
 from __future__ import annotations
 
 import os
