@@ -23,7 +23,7 @@ load_dotenv()
 DEFAULT_CONFIG_PATH = "src/bitemate/config/params.yaml"
 DEFAULT_PROMPT_PATH = "src/bitemate/prompts/orchestrator_prompt.txt"
 DEFAULT_LOGFILE = "router_agent.log"
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-2.0-flash"
 
 
 def create_router_agent(
@@ -59,7 +59,7 @@ def create_router_agent(
     """
     try:
         # Prepare dependencies
-        pm = prompt_manager or PromptManager()
+        prompt_manager =PromptManager()
 
         # Load params (safe: load_params should raise its own errors if file is malformed)
         params = {}
@@ -86,7 +86,7 @@ def create_router_agent(
         logger.debug("Using Gemini model: %s", final_model_name)
 
         # Load instruction prompt and validate
-        instruction = pm.load_prompt(prompt_path)
+        instruction = prompt_manager.load_prompt(prompt_path)
         if not instruction or not instruction.strip():
             msg = f"Router prompt at '{prompt_path}' is empty or could not be loaded."
             logger.error(msg)

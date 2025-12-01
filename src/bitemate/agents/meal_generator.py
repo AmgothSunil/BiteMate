@@ -98,11 +98,11 @@ class MealPlannerPipeline:
             self._validate_and_setup_env()
             self.params = load_params(self.config_path)
             self.agent_config: Dict[str, Any] = self.params.get("meal_planner_agent", {})
-            self.model_name: str = self.agent_config.get("model_name", "gemini-1.5-flash")
+            self.model_name: str = self.agent_config.get("model_name", "gemini-2.0-flash")
             self._validate_model_name(self.model_name)
 
             # Load prompts once (fail fast if missing)
-            self.meal_instructions = self._load_prompt_checked("src/bitemate/prompts/meal_prompt_conso.txt")
+            self.meal_instructions = self._load_prompt_checked("src/bitemate/prompts/generate_meal_prompt.txt")
             self.user_profile_instructions = self._load_prompt_checked("src/bitemate/prompts/user_profile_prompt.txt")
 
             LOGGER.info("MealPlannerPipeline initialized successfully using model: %s", self.model_name)
@@ -248,21 +248,3 @@ class MealPlannerPipeline:
             description="Generates recipes, cooking instructions, and day plans.",
             output_key="meal_plan_result",
         )
-
-
-# -----------------------
-# Example usage (module-level guard)
-# -----------------------
-if __name__ == "__main__":
-    """
-    This section demonstrates how to use MealPlannerPipeline in a script.
-    For production you will import the class and call create_* functions where appropriate.
-    """
-    try:
-        pipeline = MealPlannerPipeline()
-        profiler_agent = pipeline.create_profiler_agent()
-        meal_agent = pipeline.create_meal_generator_agent()
-        LOGGER.info("Agents created: %s, %s", profiler_agent.name, meal_agent.name)
-    except AppException as e:
-        LOGGER.exception("Startup failed: %s", e)
-        sys.exit(1)

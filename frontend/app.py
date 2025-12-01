@@ -53,9 +53,7 @@ st.markdown("""
 # API Configuration
 API_URL = "http://localhost:8000"
 
-# ============================================================================
 # User ID & Session Management
-# ============================================================================
 
 def get_or_create_user_id():
     """Get persistent user ID from URL params or create new UUID."""
@@ -168,14 +166,14 @@ with st.expander("📝 Example Inputs"):
             st.session_state.example_text = "I want healthy lunch recipes that are low carb and spicy"
     with col2:
         if st.button("👤 With Profile"):
-            st.session_state.example_text = "I'm a 30-year-old male, 85kg, 175cm tall. I have pre-diabetes and I'm trying to eat low carb. I want a spicy lunch."
+            st.session_state.example_text = "I'm a 35-year-old male,68kg, 175cm tall. I have pre-diabetes and I'm trying to eat low carb. I want a spicy lunch."
 
 # Text input
 user_input = st.text_area(
     "Enter your request:",
     value=st.session_state.get('example_text', ''),
     height=150,
-    placeholder="Example: I'm a 30 year old male, 85kg, pre-diabetic. I want a low carb spicy lunch.",
+    placeholder="Example: Find me the best recipe for lunch",
     help="Include your profile info (age, weight, health conditions) along with your meal request"
 )
 
@@ -184,7 +182,7 @@ if st.button("🎯 Generate Meal Plan", type="primary"):
     if not user_input.strip():
         st.warning("⚠️ Please enter your request first!")
     else:
-        with st.spinner("🤖 AI Agents are working on your personalized meal plan...\n\n👤 Profiling → 🧮 Calculating → 🔍 Finding Recipes → 👨‍🍳 Generating Instructions"):
+        with st.spinner("🤖 AI Agents are working on your personalized meal plan..."):
             result = call_api(user_input)
             
             if result:
@@ -209,12 +207,6 @@ if st.button("🎯 Generate Meal Plan", type="primary"):
                 
                 agent_response = result.get('response', 'No response')
                 
-                # Display the full response with nice formatting
-                st.markdown(f"""
-                <div class="agent-output">
-                {agent_response}
-                </div>
-                """, unsafe_allow_html=True)
                 
                 # Also display as markdown for better rendering
                 st.divider()

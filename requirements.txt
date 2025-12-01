@@ -3,9 +3,6 @@ ipykernel
 python-dotenv
 langchain
 mcp
-langchain-community
-arxiv
-wikipedia
 langchain-huggingface
 sentence-transformers
 pinecone

@@ -1,252 +1,206 @@
-"""
-BiteMate Orchestrator - Unified Workflow
+# src/bitemate/orchestrator.py
+from __future__ import annotations
 
-Single-input orchestrator that:
-- Takes one user input
-- Automatically detects profile info
-- Generates 5+ meal options
-- Saves to PostgreSQL
-"""
-import os
 import sys
-import asyncio
-import datetime
-from typing import Dict, Any
+import traceback
+from typing import Any, Optional, Sequence
+
 from dotenv import load_dotenv
 
-# Google ADK Imports
+from google.genai import types as genai_types
+from google.adk.agents import SequentialAgent, Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.memory import InMemoryMemoryService
 
-# Internal Imports
-from src.bitemate.agents.user_profiler_agent import UserProfilingPipeline
-from src.bitemate.agents.meal_planner_agent import MealPlannerPipeline
-from src.bitemate.utils.run_sessions import SessionManager
-from src.bitemate.utils.params import load_params
-from src.bitemate.core.logger import setup_logger
 from src.bitemate.core.exception import AppException
+from src.bitemate.core.logger import setup_logger
+from src.bitemate.utils.params import load_params
+from src.bitemate.utils.run_sessions import run_session
+from src.bitemate.agents.router_agent import create_router_agent
+from src.bitemate.agents.meal_generator import MealPlannerPipeline
 
-# Load environment
+# load .env for local/dev; in prod prefer a secrets manager
 load_dotenv()
-os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
+
+LOGGER = setup_logger(name="BiteMateOrchestrator", log_file_name="orchestrator.log")
 
 CONFIG_REL_PATH = "src/bitemate/config/params.yaml"
 
 
 class BiteMateOrchestrator:
     """
-    Unified orchestrator for BiteMate AI.
-    Takes single user input → extracts profile if present → generates meal options.
+    Master orchestrator that:
+      1. Uses a low-latency Router Agent to determine intent (UPDATE_PROFILE / GENERATE_PLAN / FULL_FLOW)
+      2. Builds the proper execution agent(s) from MealPlannerPipeline
+      3. Runs the selected agent(s) in a Runner with shared session & memory services
+
+    Dependencies are injectable for testing:
+      - meal_planner_pipeline: pipeline instance providing agent factories
+      - session_service / memory_service: services to share context between runs
+      - allowed_router_outputs: explicit set of permitted keywords
     """
-    
-    def __init__(self, config_path: str = CONFIG_REL_PATH):
-        """Initialize orchestrator with both pipelines and shared services."""
-        try:
-            self.params = load_params(config_path)
-            self.logger = setup_logger(name="BiteMateOrchestrator", log_file_name="orchestrator.log")
-            self.logger.info("Initializing BiteMate Orchestrator...")
-            
-            # Shared services (same instances for both pipelines)
-            self.session_service = InMemorySessionService()
-            self.memory_service = InMemoryMemoryService()
-            self.session_manager = SessionManager(session_service=self.session_service)
-            
-            # Initialize pipelines
-            self.user_profiler_pipeline = UserProfilingPipeline(config_path)
-            self.meal_planner_pipeline = MealPlannerPipeline(config_path)
-            
-            # Runners (lazy initialization)
-            self._user_profiler_runner = None
-            self._meal_planner_runner = None
-            
-            self.logger.info("✅ BiteMate Orchestrator initialized successfully!")
-            
-        except Exception as e:
-            msg = f"Failed to initialize BiteMateOrchestrator: {str(e)}"
-            if hasattr(self, 'logger'):
-                self.logger.critical(msg)
-            raise AppException(msg, sys)
-    
-    def _get_user_profiler_runner(self) -> Runner:
-        """Get or create user profiler runner (lazy)."""
-        if self._user_profiler_runner is None:
-            self.logger.info("Creating User Profiler Runner...")
-            agent_chain = self.user_profiler_pipeline.create_sequential_agent()
-            self._user_profiler_runner = Runner(
-                app_name="agents",
-                agent=agent_chain,
-                session_service=self.session_service,
-                memory_service=self.memory_service
-            )
-        return self._user_profiler_runner
-    
-    def _get_meal_planner_runner(self) -> Runner:
-        """Get or create meal planner runner (lazy)."""
-        if self._meal_planner_runner is None:
-            self.logger.info("Creating Meal Planner Runner...")
-            agent_chain = self.meal_planner_pipeline.create_sequential_agent()
-            self._meal_planner_runner = Runner(
-                app_name="agents",
-                agent=agent_chain,
-                session_service=self.session_service,
-                memory_service=self.memory_service
-            )
-        return self._meal_planner_runner
-    
-    async def execute_unified_workflow(
+
+    DEFAULT_ALLOWED = ("UPDATE_PROFILE", "GENERATE_PLAN", "FULL_FLOW")
+
+    def __init__(
         self,
-        user_id: str,
-        user_input: str,
-        num_meals: int = 5
-    ) -> Dict[str, Any]:
+        config_path: str = CONFIG_REL_PATH,
+        meal_planner_pipeline: Optional[MealPlannerPipeline] = None,
+        session_service: Optional[Any] = None,
+        memory_service: Optional[Any] = None,
+        model_name: Optional[str] = None,
+        retry_options: Optional[genai_types.HttpRetryOptions] = None,
+        allowed_router_outputs: Optional[Sequence[str]] = None,
+    ) -> None:
+        try:
+            LOGGER.info("Initializing BiteMateOrchestrator (config_path=%s)", config_path)
+            self.params = load_params(config_path)
+            orchestrator_agent_params = self.params.get("orchestrator_agent", {})
+
+            # Logging target file from config if provided
+            file_path = orchestrator_agent_params.get("file_path", "orchestrator.log")
+            # Reconfigure logger file name if different than default (optional)
+            # Note: setup_logger returns a logger; this call is idempotent in your setup
+            self.logger = setup_logger(name="BiteMateOrchestrator", log_file_name=file_path)
+
+            # Pipeline: allow injection for unit tests; otherwise create a default one
+            self.meal_planner_pipeline = meal_planner_pipeline or MealPlannerPipeline(config_path=config_path)
+
+            # Services for Runner and state sharing
+            self.session_service = session_service or InMemorySessionService()
+            self.memory_service = memory_service or InMemoryMemoryService()
+
+            # Model selection for router (default falls back to params or provided model_name)
+            self.model_name = model_name or orchestrator_agent_params.get("model_name", "gemini-2.0-flash")
+            self.retry_options = retry_options  # pass to router factory if present
+
+            self.allowed_router_outputs = set(allowed_router_outputs or self.DEFAULT_ALLOWED)
+
+            LOGGER.info("Orchestrator initialized (router model=%s).", self.model_name)
+
+        except Exception as exc:
+            tb = traceback.format_exc()
+            LOGGER.exception("Failed to initialize BiteMateOrchestrator: %s\n%s", exc, tb)
+            raise AppException(f"Initialization Failed: {exc}", sys) from exc
+
+    def _get_execution_agent(self, decision: str) -> Agent:
         """
-        **UNIFIED WORKFLOW**: Single input handles everything.
-        
-        Automatically:
-        1. Detects profile info → creates/updates profile if present
-        2. Generates meal options based on request
-        3. Saves to PostgreSQL
-        
-        Args:
-            user_id: Unique user identifier
-            user_input: Single user request (can include profile info + meal request)
-            num_meals: Minimum number of meal options (default: 5)
-        
-        Returns:
-            Dictionary with profile_updated flag and meal options
+        Build and return the execution Agent (or SequentialAgent) based on router decision.
+        Raises AppException for unrecoverable errors during construction.
         """
         try:
-            self.logger.info(f"Starting Unified Workflow for user: {user_id}")
-            self.logger.info(f"Input: {user_input[:100]}...")
-            
-            profile_updated = False
-            profile_response = None
-            
-            # Step 1: Auto-detect profile information
-            profile_keywords = [
-                "i'm", "i am", "years old", "kg", "cm", "tall", "weight",
-                "diabetic", "diabetes", "vegetarian", "vegan", "allergy", "allergic",
-                "prefer", "don't like", "hate", "love"
-            ]
-            
-            has_profile_info = any(keyword in user_input.lower() for keyword in profile_keywords)
-            
-            if has_profile_info:
-                self.logger.info("Profile info detected → Creating/updating profile...")
-                try:
-                    runner = self._get_user_profiler_runner()
-                    profile_response = await self.session_manager.run_session(
-                        runner_instance=runner,
-                        user_queries=user_input,
-                        session_id=f"{user_id}_profile",
-                        context_variables={"user_id": user_id, "user_input": user_input}
-                    )
-                    profile_updated = True
-                    self.logger.info("✅ Profile created/updated")
-                except Exception as e:
-                    self.logger.warning(f"Profile update failed, continuing: {e}")
-            else:
-                self.logger.info("No profile info detected → Proceeding to meal planning")
-            
-            # Step 2: Generate meal options
-            self.logger.info(f"Generating meal options (minimum {num_meals})...")
-            
-            runner = self._get_meal_planner_runner()
-            session_id = f"{user_id}_meal_{datetime.date.today().strftime('%Y%m%d')}"
-            
-            meal_responses = await self.session_manager.run_session(
-                runner_instance=runner,
-                user_queries=user_input,
-                session_id=session_id,
-                context_variables={
-                    "user_id": user_id,
-                    "user_input": user_input,
-                    "current_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-            )
-            
-            # Step 3: Auto-save to PostgreSQL (fallback)
-            try:
-                from src.bitemate.tools.bitemate_tools import save_generated_meal_plan
-                
-                save_result = save_generated_meal_plan(
-                    user_id=user_id,
-                    session_id=session_id,
-                    plan_summary=f"Recipe Options - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                    recipes_json={
-                        "user_request": user_input,
-                        "responses": meal_responses,
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }
+            if decision == "UPDATE_PROFILE":
+                self.logger.info("Router decision => UPDATE_PROFILE: creating profiler agent.")
+                return self.meal_planner_pipeline.create_profiler_agent()
+
+            if decision == "GENERATE_PLAN":
+                self.logger.info("Router decision => GENERATE_PLAN: creating meal generator agent.")
+                return self.meal_planner_pipeline.create_meal_generator_agent()
+
+            if decision == "FULL_FLOW":
+                self.logger.info("Router decision => FULL_FLOW: creating SequentialAgent (profile -> plan).")
+                profiler = self.meal_planner_pipeline.create_profiler_agent()
+                planner = self.meal_planner_pipeline.create_meal_generator_agent()
+                return SequentialAgent(
+                    name="FullWorkflow",
+                    description="Profile then generate meal plan.",
+                    sub_agents=[profiler, planner],
                 )
-                self.logger.info(f"✅ Saved to PostgreSQL: {save_result}")
-            except Exception as save_error:
-                self.logger.warning(f"PostgreSQL save failed: {save_error}")
-            
-            self.logger.info("✅ Unified Workflow completed successfully")
-            
-            return {
-                "user_id": user_id,
-                "profile_updated": profile_updated,
-                "profile_response": profile_response,
-                "meal_options": meal_responses,
-                "num_meals_requested": num_meals,
-                "status": "success"
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error in unified workflow: {e}")
-            raise AppException(f"Unified Workflow Failed: {e}", sys)
 
+            # Fallback: build a safe sequential flow
+            self.logger.warning("Unknown decision in factory: %s. Falling back to FULL_FLOW.", decision)
+            profiler = self.meal_planner_pipeline.create_profiler_agent()
+            planner = self.meal_planner_pipeline.create_meal_generator_agent()
+            return SequentialAgent(name="FallbackFlow", description="Fallback profile->plan flow", sub_agents=[profiler, planner])
 
-# ==================== EXAMPLE USAGE ====================
+        except Exception as exc:
+            tb = traceback.format_exc()
+            self.logger.exception("Error building execution agent: %s\n%s", exc, tb)
+            raise AppException(f"Factory Build Failed: {exc}", sys) from exc
 
-async def example_usage():
-    """Example: Single input with profile info + meal request."""
-    print("\n" + "="*70)
-    print("BITEMATE ORCHESTRATOR - UNIFIED WORKFLOW")
-    print("="*70)
-    
-    orchestrator = BiteMateOrchestrator()
-    
-    # Example 1: User provides profile + meal request in one input
-    user_input = """
-    I'm a 30-year-old male, 75kg, 180cm tall. 
-    I have type 2 diabetes and I'm vegetarian. 
-    I want healthy lunch recipes.
-    """
-    
-    try:
-        result = await orchestrator.execute_unified_workflow(
-            user_id="demo_user",
-            user_input=user_input,
-            num_meals=5
-        )
-        
-        print(f"\n📊 RESULTS:")
-        print(f"Profile Updated: {result['profile_updated']}")
-        print(f"Meals Requested: {result['num_meals_requested']}")
-        
-        if result['profile_updated']:
-            print(f"\n✅ PROFILE CREATED")
-        
-        print(f"\n🍽️ MEAL OPTIONS:")
-        for i, meal in enumerate(result['meal_options'], 1):
-            print(f"\n--- Option {i} ---")
-            print(meal[:300] + "..." if len(meal) > 300 else meal)
-        
-        print("\n" + "="*70)
-        print("✅ Workflow completed!")
-        print("="*70)
-        
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
+    @staticmethod
+    def _normalize_router_result(router_result: Any) -> str:
+        """
+        Accepts the raw output from run_session and returns a normalized uppercase string.
+        Handles common shapes: string, object with .text, list, etc.
+        """
+        if router_result is None:
+            return ""
 
+        # If run_session returns an object with text property (common), prefer it
+        if hasattr(router_result, "text"):
+            raw = str(getattr(router_result, "text") or "")
+        else:
+            raw = str(router_result)
 
-if __name__ == "__main__":
-    """
-    Run the unified workflow example.
-    Usage: uv run -m src.bitemate.agents.orchestrator
-    """
-    asyncio.run(example_usage())
+        # Strip whitespace, backticks and make uppercase
+        return raw.strip().replace("`", "").upper()
+
+    async def run_flow(self, user_input: str, user_id: str, session_id: str = "default") -> Any:
+        """
+        Public async entrypoint to run a user request.
+
+        Steps:
+          1. Run Router Agent in a temporary session (to avoid polluting user chat).
+          2. Validate router decision and build execution agent(s).
+          3. Run the chosen agent(s) with shared session & memory.
+
+        Returns:
+            The result of run_session for the main agent run (shape depends on your run_session implementation).
+        """
+        try:
+            self.logger.info("Running flow for user=%s, session=%s", user_id, session_id)
+
+            # Build router agent with same retry options used elsewhere (optional)
+            router_agent = create_router_agent(model_name=self.model_name, retry_options=self.retry_options)
+
+            router_runner = Runner(
+                app_name="agents",
+                agent=router_agent,
+                session_service=self.session_service,
+                memory_service=self.memory_service,
+            )
+
+            # Execute routing in an isolated session name to keep routing internal
+            router_session_name = f"{session_id}_router"
+            router_result = await run_session(
+                runner_instance=router_runner,
+                user_queries=[user_input],
+                session_name=router_session_name,
+                user_id=user_id,
+            )
+
+            decision = self._normalize_router_result(router_result)
+            self.logger.info("Router decision (raw): %s", decision)
+
+            # Validate or fallback
+            if decision not in self.allowed_router_outputs:
+                self.logger.warning("Router produced unexpected decision '%s'. Allowed: %s. Defaulting to FULL_FLOW.", decision, self.allowed_router_outputs)
+                decision = "FULL_FLOW"
+
+            # Build the actual execution agent (profiler/planner/sequential)
+            execution_agent = self._get_execution_agent(decision)
+
+            main_runner = Runner(
+                app_name="agents",
+                agent=execution_agent,
+                session_service=self.session_service,
+                memory_service=self.memory_service,
+            )
+
+            # Run the selected agent(s) with the real session (this will be visible in user chat)
+            result = await run_session(
+                runner_instance=main_runner,
+                user_queries=[user_input],
+                session_name=session_id,
+                user_id=user_id,
+            )
+
+            self.logger.info("Main flow execution complete for user=%s", user_id)
+            return result
+
+        except Exception as exc:
+            tb = traceback.format_exc()
+            self.logger.exception("Orchestration failed for user=%s: %s\n%s", user_id, exc, tb)
+            raise AppException(f"Orchestration Failed: {exc}", sys) from exc

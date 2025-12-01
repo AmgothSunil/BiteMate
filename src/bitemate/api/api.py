@@ -11,8 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# from src.bitemate.agents.main_agent import BiteMateOrchestrator
-from src.bitemate.agents.main_agents import BiteMateOrchestrator
+from src.bitemate.agents.orchestrator import BiteMateOrchestrator
 
 load_dotenv()
 
@@ -24,7 +23,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  ## this is for local prototyping
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,4 +111,4 @@ async def create_meal_plan(request: MealPlanRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.bitemate.api.api:app", host="0.0.0.0", port=8000, reload=True)
