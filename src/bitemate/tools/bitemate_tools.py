@@ -188,6 +188,6 @@ def search_usda_database(query: str) -> str:
 if __name__ == "__main__":
     # NO PRINT STATEMENTS HERE!
     try:
-        mcp.run()
+        mcp.run(transport="sse")
     except Exception as e:
         sys.exit(1)
