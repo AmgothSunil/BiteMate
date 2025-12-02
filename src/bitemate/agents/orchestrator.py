@@ -170,7 +170,7 @@ class BiteMateOrchestrator:
                 session_name=router_session_name,
                 user_id=user_id,
             )
-
+            
             decision = self._normalize_router_result(router_result)
             self.logger.info("Router decision (raw): %s", decision)
 

@@ -21,6 +21,7 @@ from src.bitemate.core.logger import setup_logger
 from src.bitemate.tools.mcp_client import get_mcp_toolset
 from src.bitemate.utils.params import load_params
 from src.bitemate.utils.prompt import PromptManager
+from src.bitemate.utils.callbacks import clean_after_model_callback
 
 # Load env variables from .env into os.environ (safe for local/dev; in prod use a secrets manager)
 load_dotenv()
@@ -211,7 +212,9 @@ class MealPlannerPipeline:
                 instruction=instruction,
                 tools=tools_list,
                 output_key=output_key,
+                after_model_callback=clean_after_model_callback,
             )
+
             LOGGER.info("Agent '%s' created successfully.", name)
             return agent
         except Exception as exc:
