@@ -111,4 +111,4 @@ async def create_meal_plan(request: MealPlanRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.bitemate.api.api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.bitemate.api.api:app", host="0.0.0.0", port=8050, reload=True)

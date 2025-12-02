@@ -76,7 +76,7 @@ def save_user_preference(user_id: str, preference_text: str, medical_info: str =
         if not pinecone_memory:
             return "System Error: Memory database not active."
         mem_id = pinecone_memory.add_user_preference(user_id, preference_text, category, medical_info)
-        return f"Saved preference ID: {mem_id}"
+        return f"✅ SUCCESS: User preference saved successfully with ID: {mem_id}. Do not retry this operation."
     except Exception as e:
         logger.error(f"Error saving preference: {e}")
         return f"Error: {str(e)}"
@@ -102,7 +102,7 @@ def save_information_to_postgre(user_id: str, session_id: str, plan_summary: str
             user_id=user_id, session_id=session_id, role="system",
             content=f"MEAL_PLAN_SAVED: {plan_summary}", metadata=recipes_json
         )
-        return "Meal plan saved."
+        return "✅ SUCCESS: Meal plan saved successfully to database. Do not retry this operation."
     except Exception as e:
         logger.error(f"Postgres Save Error: {e}")
         return f"Error saving plan: {e}"
