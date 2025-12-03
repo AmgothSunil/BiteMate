@@ -51,7 +51,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # API Configuration
-API_URL = "http://localhost:8000"
+API_URL = "http://localhost:8050"
 
 # User ID & Session Management
 
