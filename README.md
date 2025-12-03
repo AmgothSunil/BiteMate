@@ -28,7 +28,7 @@ BiteMate is an intelligent meal planning platform powered by Google's Agentic De
 
 - **🤖 Multi-Agent System**: Router → Profiler → Meal Generator orchestration
 - **🧠 AI-Powered**: Built on Google Gemini 2.0 Flash for fast, intelligent responses
-- **💾 Persistent Memory**: PostgreSQL for user profiles + Pinecone for vector search
+- **💾 Persistent Memory**: PostgreSQL for user history + Pinecone for for user profiles
 - **🔧 MCP Integration**: Model Context Protocol for extensible tool ecosystem
 - **🌐 Full-Stack**: FastAPI backend + Streamlit frontend
 - **📊 Nutritional Intelligence**: Automatic calorie calculation and meal variety tracking
@@ -98,14 +98,22 @@ BiteMate is an intelligent meal planning platform powered by Google's Agentic De
 │                     │                                            │
 └─────────────────────┼────────────────────────────────────────────┘
                       │
-        ┌─────────────┴──────────────┐
-        │                            │
-        ▼                            ▼
-┌───────────────┐          ┌──────────────────┐
-│   PostgreSQL  │          │     Pinecone     │
-│ (User Profiles│          │  (Vector Search) │
-│  & Meal Data) │          │                  │
-└───────────────┘          └──────────────────┘
+                      │ MCP Protocol
+                      ▼
+        ┌──────────────────────────────┐
+        │   MCP SSE Server             │
+        │   (BiteMate Tools)           │
+        │   - Memory Tools             │
+        │   - External API Tools       │
+        └──────┬───────────────┬───────┘
+               │               │
+       ┌───────┴───┐       ┌───┴────────────┐
+       ▼           ▼       ▼                ▼
+┌─────────┐ ┌──────────┐ ┌────────┐  ┌──────────┐
+│PostgreSQL│ │ Pinecone │ │Nutritionix│ │Spoonacular│
+│(Profiles │ │ (Vector  │ │  API    │ │   API    │
+│ & Meals) │ │  Search) │ └────────┘ └──────────┘
+└──────────┘ └──────────┘
 ```
 
 ### Agent Architecture
@@ -122,7 +130,8 @@ BiteMate is an intelligent meal planning platform powered by Google's Agentic De
 - **Framework**: FastAPI (async REST API)
 - **AI/ML**: Google ADK, Gemini 2.0 Flash
 - **Databases**: PostgreSQL (structured data), Pinecone (vector embeddings)
-- **Tools**: MCP (Model Context Protocol)
+- **Tools**: MCP (Model Context Protocol) via SSE (Server-Sent Events)
+- **Integration**: 7 MCP tools for database and external API access
 
 **Frontend**
 - **Framework**: Streamlit
@@ -215,8 +224,17 @@ USDA_API_KEY=your_usda_api_key
 - **Spoonacular**: [Food API](https://spoonacular.com/food-api)
 - **USDA**: [FoodData Central](https://fdc.nal.usda.gov/api-key-signup.html)
 
+### 5. MCP Server Configuration
 
-### 5. Database Setup
+The MCP server URL is configured in your environment. Add to `.env` if you need to customize:
+
+```env
+# MCP Server (Optional - defaults shown)
+MCP_SERVER_URL=http://localhost:8000/sse
+```
+
+
+### 6. Database Setup
 
 **PostgreSQL**:
 ```bash
@@ -236,41 +254,90 @@ createdb bitemate_db
 
 ### Running the Application
 
-#### 1. Start the FastAPI Backend
+> **⚠️ IMPORTANT**: You must start the services in this exact order for the system to work properly.
+
+#### 1. Start the MCP SSE Server (BiteMate Tools)
+
+The MCP (Model Context Protocol) server provides all the tools (database access, API integrations) that the agents need. **This must be started first.**
 
 ```bash
-# Option 1: Using uvicorn directly
-uvicorn src.bitemate.api.api:app --reload --host 0.0.0.0 --port 8000
+# In terminal 1
+python -m src.bitemate.tools.bitemate_tools
 
-# Option 2: Using the main script
-python -m src.bitemate.api.api
-
-# Option 3: Using uv
-uv run uvicorn src.bitemate.api.api:app --reload --host 0.0.0.0 --port 8000
+# Or using uv
+uv run python -m src.bitemate.tools.bitemate_tools
 ```
 
-The API will be available at `http://localhost:8000`
+You should see:
+```
+[BiteMateTools] Database services initialized.
+```
 
-#### 2. Start the Streamlit Frontend
+The MCP server will run on `http://localhost:8000/sse` by default.
 
-In a new terminal:
+#### 2. Start the FastAPI Backend
+
+Once the MCP server is running, start the API server:
 
 ```bash
+# In terminal 2 - Using uvicorn directly
+uvicorn src.bitemate.api.api:app --reload --host 0.0.0.0 --port 8050
+
+# Or using the main script
+python -m src.bitemate.api.api
+
+# Or using uv
+uv run uvicorn src.bitemate.api.api:app --reload --host 0.0.0.0 --port 8050
+```
+
+The API will be available at `http://localhost:8050`
+
+#### 3. Start the Streamlit Frontend
+
+Finally, start the user interface:
+
+```bash
+# In terminal 3
 streamlit run frontend/app.py
 ```
 
 The UI will open at `http://localhost:8501`
 
+### Quick Start Script
+
+For convenience, you can create a startup script:
+
+**Windows (PowerShell)**:
+```powershell
+# start-bitemate.ps1
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "python -m src.bitemate.tools.bitemate_tools"
+Start-Sleep -Seconds 3
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "uvicorn src.bitemate.api.api:app --reload --host 0.0.0.0 --port 8050"
+Start-Sleep -Seconds 3
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "streamlit run frontend/app.py"
+```
+
+**Linux/Mac (Bash)**:
+```bash
+#!/bin/bash
+# start-bitemate.sh
+python -m src.bitemate.tools.bitemate_tools &
+sleep 3
+uvicorn src.bitemate.api.api:app --reload --host 0.0.0.0 --port 8050 &
+sleep 3
+streamlit run frontend/app.py
+```
+
 ### Using the API Directly
 
 **Health Check**:
 ```bash
-curl http://localhost:8000/api/health
+curl http://localhost:8050/api/health
 ```
 
 **Generate Meal Plan**:
 ```bash
-curl -X POST http://localhost:8000/api/meal-plan \
+curl -X POST http://localhost:8050/api/meal-plan \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "user_123",
@@ -428,20 +495,26 @@ BiteMate/
 │       │   ├── user_profile_prompt.txt
 │       │   └── orchestrator_prompt.txt
 │       ├── tools/
-│       │   ├── bitemate_tools.py     # Custom MCP tools
-│       │   └── mcp_client.py         # MCP integration
+│       │   ├── bitemate_tools.py     # MCP SSE server with tools
+│       │   └── mcp_client.py         # MCP client integration
 │       └── utils/
+│           ├── callbacks.py           # Agent callbacks
 │           ├── params.py              # Config loader
 │           ├── prompt.py              # Prompt manager
 │           └── run_sessions.py        # Agent session runner
-├── tests/                     # Test suite
+├── tests                     # Test suite
+│    ├── test_meal_generator.py           # Meal generator tests
+│    ├── test_orchestrator.py             # Orchestrator tests
+│    └── test_router_agent.py             # Router agent tests
+│ 
 ├── .env.example               # Example environment configuration
 ├── .gitignore
 ├── LICENSE
 ├── pyproject.toml             # Project metadata & dependencies
 ├── pytest.ini                 # Pytest configuration
 ├── README.md
-└── requirements.txt
+├── requirements.txt
+└── uv.lock
 ```
 
 ---
@@ -510,16 +583,67 @@ router_agent:
   model_name: "gemini-2.0-flash"
   file_path: "router_agent.log"
 
-orchestrator_agent:
-  model_name: "gemini-2.0-flash"
-  file_path: "orchestrator_agent.log"
+bitemate_tools:
+  file_path: "bitemate_tools.log"
 
-retry_config_params:
-  attempts: 5
-  exp_base: 7
-  initial_delay: 1
-  http_status_codes: [429, 500, 503, 504]
+mcp_client:
+  file_path: "mcp_client.log"
+
+callbacks:
+  file_path: "callbacks.log"
 ```
+
+---
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+#### MCP Server Connection Failed
+
+**Error**: `Failed to create MCP Toolset` or `Connection refused`
+
+**Solution**:
+1. Ensure MCP server is running first:
+   ```bash
+   python -m src.bitemate.tools.bitemate_tools
+   ```
+2. Check the MCP server URL in your environment (default: `http://localhost:8000/sse`)
+3. Verify no other service is using port 8000
+
+#### Duplicate Recipe Generation
+
+**Error**: Agent generates the same recipe twice
+
+**Solution**: This is a known issue with tool retry behavior. The system has been updated with stronger prompt instructions to prevent this.
+
+#### Database Connection Errors
+
+**Error**: `Database not active` or connection errors
+
+**Solution**:
+1. Verify PostgreSQL is running
+2. Check database credentials in `.env`
+3. Ensure Pinecone API key is valid
+4. Create the database: `createdb bitemate_db`
+
+#### Port Already in Use
+
+**Error**: `Address already in use`
+
+**Solution**:
+- MCP Server (port 8000): Change `MCP_SERVER_URL` in `.env`
+- API Server (port 8050): Use `--port` flag with uvicorn
+- Streamlit (port 8501): Use `--server.port` flag
+
+### Logs
+
+All logs are stored in the `logs/` directory:
+- `bitemate_tools.log` - MCP server operations
+- `mcp_client.log` - MCP client connections
+- `meal_planner_agent.log` - Meal generation
+- `router_agent.log` - Intent routing
+- `callbacks.log` - Agent callbacks
 
 ---
 
@@ -566,21 +690,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 For support, email amgothsunil422@gmail.com or open an issue on GitHub.
-
----
-
-## 🗺️ Roadmap
-
-- [ ] Docker containerization
-- [ ] CI/CD pipeline setup
-- [ ] Enhanced nutritional analysis
-- [ ] Mobile app (React Native)
-- [ ] Multi-language support
-- [ ] Recipe image generation
-- [ ] Social sharing features
-- [ ] Meal prep planning
-- [ ] Grocery list generation
-- [ ] Integration with fitness trackers
 
 ---
 

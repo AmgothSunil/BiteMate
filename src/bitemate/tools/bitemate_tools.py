@@ -9,18 +9,23 @@ import json
 from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 
-# Third-party imports
 from mcp.server.fastmcp import FastMCP
 
-# Internal imports
 from src.bitemate.core.logger import setup_logger
+from src.bitemate.utils.params import load_params
 
-# ============================================================================
-# 1. Initialization & Configuration
-# ============================================================================
+CONFIG_REL_PATH = "src/bitemate/config/params.yaml"
+
+params = load_params(CONFIG_REL_PATH)
+
+bitemate_tools_params = params.get("bitemate_tools", {})
+
+file_path = bitemate_tools_params.get("file_path", "bitemate_tools.log")
+
+# Initialization & Configuration
 
 load_dotenv()
-logger = setup_logger("BiteMateTools", "mcp_tools.log")
+logger = setup_logger("BiteMateTools", file_path)
 
 # --- CRITICAL FIX: Write non-JSON logs to STDERR, never STDOUT ---
 def log_safe(message: str):
@@ -56,18 +61,14 @@ try:
 except Exception as e:
     log_safe(f"Service initialization warning: {e}")
 
-# ============================================================================
 # Initialize FastMCP Server
-# ============================================================================
 
 mcp = FastMCP(
     "BiteMateTools",
     dependencies=["requests", "psycopg2-binary", "pinecone", "langchain"]
 )
 
-# ============================================================================
-# 🧠 MEMORY TOOLS
-# ============================================================================
+# MEMORY TOOLS
 
 @mcp.tool()
 def save_user_preference(user_id: str, preference_text: str, medical_info: str = "", category: str = "general") -> str:
@@ -124,9 +125,7 @@ def recall_user_profile(user_id: str, context: str) -> str:
     except Exception as e:
         return f"Error recalling profile: {e}"
 
-# ============================================================================
-# 🥦 EXTERNAL API TOOLS
-# ============================================================================
+#  EXTERNAL API TOOLS
 
 @mcp.tool()
 def search_nutrition_info(query: str) -> str:
@@ -181,12 +180,9 @@ def search_usda_database(query: str) -> str:
     except Exception as e:
         return f"API Error: {e}"
 
-# ============================================================================
 # Main Entry Point
-# ============================================================================
 
 if __name__ == "__main__":
-    # NO PRINT STATEMENTS HERE!
     try:
         mcp.run(transport="sse")
     except Exception as e:

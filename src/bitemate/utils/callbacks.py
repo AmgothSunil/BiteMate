@@ -7,7 +7,17 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
 from google.genai import types as genai_types
 
-logger = logging.getLogger(__name__)
+from src.bitemate.utils.params import load_params
+from src.bitemate.core.logger import setup_logger
+from src.bitemate.core.exception import AppException
+
+CONFIG_REL_PATH = "src/bitemate/config/params.yaml"
+
+params = load_params(CONFIG_REL_PATH)
+callbacks_params = params.get("callbacks", {})
+file_path = callbacks_params.get("file_path", "callbacks.log")
+
+logger = setup_logger(name="Callbacks", log_file_name=file_path)
 
 # Cache the last good user-facing response per agent
 _CACHED_RESPONSE: Dict[str, str] = {}

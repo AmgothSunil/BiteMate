@@ -243,14 +243,7 @@ class MealPlannerPipeline:
     def create_profiler_agent(self) -> Agent:
         """
         Create an Agent responsible for user profiling.
-        
-        This agent has access to:
-        - recall_user_profile (retrieve user data from Pinecone)
-        - save_user_preference (save preferences to Pinecone)
-        - get_recent_conversation (fetch chat history)
-        - search_nutrition_info (Nutritionix for nutrition calculations)
-        - search_usda_database (USDA for food data)
-
+    
         Returns:
             An Agent instance configured as the UnifiedProfileManager.
         """
@@ -265,13 +258,6 @@ class MealPlannerPipeline:
     def create_meal_generator_agent(self) -> Agent:
         """
         Create an Agent responsible for meal generation.
-        
-        This agent has access to:
-        - search_recipes (Spoonacular for recipe search)
-        - search_nutrition_info (Nutritionix for nutrition data)
-        - search_usda_database (USDA for ingredient info)
-        - save_information_to_postgre (save meal plans to PostgreSQL)
-        - recall_user_profile (access user preferences)
 
         Returns:
             An Agent instance configured as the UnifiedMealChef.
@@ -284,51 +270,3 @@ class MealPlannerPipeline:
             output_key="meal_plan_result",
         )
 
-    def create_pipeline(self) -> tuple[Agent, Agent]:
-        """
-        Convenience method to create both agents at once.
-        
-        Returns:
-            Tuple of (profiler_agent, meal_generator_agent)
-        """
-        LOGGER.info("Creating complete meal planning pipeline with both agents")
-        profiler = self.create_profiler_agent()
-        meal_gen = self.create_meal_generator_agent()
-        LOGGER.info("✅ Pipeline created successfully with MCP tools integrated")
-        return profiler, meal_gen
-
-
-# Example usage for testing
-if __name__ == "__main__":
-    try:
-        LOGGER.info("=" * 60)
-        LOGGER.info("Testing MealPlannerPipeline with MCP Integration")
-        LOGGER.info("=" * 60)
-        
-        pipeline = MealPlannerPipeline()
-        
-        # Create both agents
-        profiler, meal_gen = pipeline.create_pipeline()
-        
-        print("\n✅ Pipeline initialized successfully!")
-        print(f"\n📋 Profiler Agent: {profiler.name}")
-        print(f"   Description: {profiler.description}")
-        print(f"   Output Key: {profiler.output_key}")
-        
-        print(f"\n🍳 Meal Generator Agent: {meal_gen.name}")
-        print(f"   Description: {meal_gen.description}")
-        print(f"   Output Key: {meal_gen.output_key}")
-        
-        print("\n🔧 Both agents have access to all 7 MCP tools:")
-        print("   1. save_user_preference (Pinecone)")
-        print("   2. get_recent_conversation (Chat history)")
-        print("   3. save_information_to_postgre (PostgreSQL)")
-        print("   4. recall_user_profile (Pinecone)")
-        print("   5. search_nutrition_info (Nutritionix)")
-        print("   6. search_recipes (Spoonacular)")
-        print("   7. search_usda_database (USDA)")
-        
-    except Exception as e:
-        LOGGER.exception("Failed to initialize pipeline: %s", e)
-        print(f"\n❌ Error: {e}")
-        sys.exit(1)

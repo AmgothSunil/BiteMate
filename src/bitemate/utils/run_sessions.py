@@ -65,7 +65,7 @@ async def run_session(
         # Collect ALL text pieces for this single query
         collected_text_parts: list[str] = []
 
-        # --- STREAM HANDLING ---
+        # STREAM HANDLING 
         async for event in runner_instance.run_async(
             user_id=user_id,
             session_id=session.id,
@@ -93,7 +93,7 @@ async def run_session(
                             role = (content.role or "model").capitalize()
                             print(f"\n{role} > {text}\n")
 
-                            # ✅ Store it so we don't lose earlier responses
+                            # Store it so we don't lose earlier responses
                             collected_text_parts.append(text)
 
         # After finishing the stream for this query,

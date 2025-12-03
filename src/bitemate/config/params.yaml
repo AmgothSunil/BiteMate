@@ -3,13 +3,6 @@ run_session_params:
   app_name: "agents"
   user_id: "default"
 
-retry_config_params:
-  file_path: "retry_config.log"
-  attempts: 5
-  exp_base: 7
-  initial_delay: 1
-  http_status_codes: [429, 500, 503, 504]
-
 pinecone_memory_params:
   file_path: "pinecone_memory.log"
   embedding_model: "all-MiniLM-L6-v2"
@@ -20,6 +13,9 @@ postgre_memory_db:
 prompt_loader:
   file_path: "prompt_loader.log"
 
+
+bitemate_tools:
+  file_path: "bitemate_tools.log"
 
 meal_planner_agent:
   file_path: "meal_planner_agent.log"
